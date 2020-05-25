@@ -37,9 +37,6 @@
 #include <syslog.h>
 #include <dirent.h>
 
-#include <linux/types.h>          /* for videodev2.h */
-#include <linux/videodev2.h>
-
 #include "output_file.h"
 
 #include "../../utils.h"
@@ -55,6 +52,7 @@ static unsigned char *frame = NULL;
 static char *command = NULL;
 static int input_number = 0;
 static char *mjpgFileName = NULL;
+static char *linkFileName = NULL;
 
 /******************************************************************************
 Description.: print a help message
@@ -69,6 +67,7 @@ void help(void)
             " The following parameters can be passed to this plugin:\n\n" \
             " [-f | --folder ]........: folder to save pictures\n" \
             " [-m | --mjpeg ].........: save the frames to an mjpg file \n" \
+            " [-l | --link ]..........: link the last picture in ringbuffer as this fixed named file\n" \
             " [-d | --delay ].........: delay after saving pictures in ms\n" \
             " [-i | --input ].........: read frames from the specified input plugin\n" \
             " The following arguments are takes effect only if the current mode is not MJPG\n" \
@@ -79,7 +78,7 @@ void help(void)
 }
 
 /******************************************************************************
-Description.: clean up allocated ressources
+Description.: clean up allocated resources
 Input Value.: unused argument
 Return Value: -
 ******************************************************************************/
@@ -92,12 +91,12 @@ void worker_cleanup(void *arg)
     }
 
     if(!first_run) {
-        DBG("already cleaned up ressources\n");
+        DBG("already cleaned up resources\n");
         return;
     }
 
     first_run = 0;
-    OPRINT("cleaning up ressources allocated by worker thread\n");
+    OPRINT("cleaning up resources allocated by worker thread\n");
 
     if(frame != NULL) {
         free(frame);
@@ -192,7 +191,7 @@ void maintain_ringbuffer(int size)
         free(namelist[i]);
     }
 
-    /* free last just allocated ressources */
+    /* free last just allocated resources */
     free(namelist);
 }
 
@@ -211,7 +210,7 @@ void *worker_thread(void *arg)
     struct tm *now;
     unsigned char *tmp_framebuffer = NULL;
 
-    /* set cleanup handler to cleanup allocated ressources */
+    /* set cleanup handler to cleanup allocated resources */
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(ok >= 0 && !pglobal->stop) {
@@ -286,6 +285,13 @@ void *worker_thread(void *arg)
 
             close(fd);
 
+            /* link the picture as fixed name file */
+            if (linkFileName) {
+                snprintf(buffer1, sizeof(buffer1), "%s/%s", folder, linkFileName);
+                unlink(buffer1);
+                (void) link(buffer2, buffer1);
+            }
+
             /* call the command if user specified one, pass current filename as argument */
             if(command != NULL) {
                 memset(buffer1, 0, sizeof(buffer1));
@@ -307,7 +313,7 @@ void *worker_thread(void *arg)
 
             /*
              * maintain ringbuffer
-             * do not maintain ringbuffer for each picture, this saves ressources since
+             * do not maintain ringbuffer for each picture, this saves resources since
              * each run of the maintainance function involves sorting/malloc/free operations
              */
             if(ringbuffer_exceed <= 0) {
@@ -366,8 +372,7 @@ int output_init(output_parameter *param, int id)
     while(1) {
         int option_index = 0, c = 0;
         static struct option long_options[] = {
-            {"h", no_argument, 0, 0
-            },
+            {"h", no_argument, 0, 0},
             {"help", no_argument, 0, 0},
             {"f", required_argument, 0, 0},
             {"folder", required_argument, 0, 0},
@@ -381,6 +386,10 @@ int output_init(output_parameter *param, int id)
             {"input", required_argument, 0, 0},
             {"m", required_argument, 0, 0},
             {"mjpeg", required_argument, 0, 0},
+            {"l", required_argument, 0, 0},
+            {"link", required_argument, 0, 0},
+            {"c", required_argument, 0, 0},
+            {"command", required_argument, 0, 0},
             {0, 0, 0, 0}
         };
 
@@ -445,6 +454,18 @@ int output_init(output_parameter *param, int id)
         case 13:
             DBG("case 12,13\n");
             mjpgFileName = strdup(optarg);
+            break;
+            /* l link */
+        case 14:
+        case 15:
+            DBG("case 14,15\n");
+            linkFileName = strdup(optarg);
+            break;
+            /* c command */
+        case 16:
+        case 17:
+            DBG("case 16,17\n");
+            command = strdup(optarg);
             break;
         }
     }

@@ -33,7 +33,6 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <syslog.h>
 #include <netdb.h>
 #include <errno.h>
 #include <limits.h>
@@ -435,6 +434,7 @@ void send_snapshot(cfd *context_fd, int input_number)
 
     /* write the response */
     sprintf(buffer, "HTTP/1.0 200 OK\r\n" \
+            "Access-Control-Allow-Origin: *\r\n" \
             STD_HEADER \
             "Content-type: image/jpeg\r\n" \
             "X-Timestamp: %d.%06d\r\n" \
@@ -464,6 +464,7 @@ void send_stream(cfd *context_fd, int input_number)
 
     DBG("preparing header\n");
     sprintf(buffer, "HTTP/1.0 200 OK\r\n" \
+            "Access-Control-Allow-Origin: *\r\n" \
             STD_HEADER \
             "Content-Type: multipart/x-mixed-replace;boundary=" BOUNDARY "\r\n" \
             "\r\n" \
@@ -834,15 +835,23 @@ void execute_cgi(int id, int fd, char *parameter, char *query_string)
     if(f == NULL) {
         DBG("Unable to execute the requested CGI script\n");
         send_error(fd, 403, "CGI script cannot be executed");
+        free(buffer);
+        close(lfd);
         return;
     }
 
     while((i = fread(buffer, 1, sizeof(buffer), f)) > 0) {
         if (write(fd, buffer, i) < 0) {
             fclose(f);
+            free(buffer);
+            close(lfd);
             return;
         }
     }
+
+    fclose(f);
+    free(buffer);
+    close(lfd);
 }
 
 
@@ -1066,7 +1075,7 @@ void *client_thread(void *arg)
             query_suffixed = 0;
         }
         #endif
-	#ifdef WXP_COMPAT
+    #ifdef WXP_COMPAT
     } else if((strstr(buffer, "GET /cam") != NULL) && (strstr(buffer, ".jpg") != NULL)) {
         req.type = A_SNAPSHOT_WXP;
         query_suffixed = 255;
@@ -1078,7 +1087,18 @@ void *client_thread(void *arg)
             query_suffixed = 0;
         }
         #endif
-	#endif
+    #endif
+    } else if(strstr(buffer, "POST /stream") != NULL) {
+        req.type = A_STREAM;
+        query_suffixed = 255;
+        #ifdef MANAGMENT
+        if (check_client_status(lcfd.client)) {
+            req.type = A_UNKNOWN;
+            lcfd.client->last_take_time.tv_sec += piggy_fine;
+            send_error(lcfd.fd, 403, "frame already sent");
+            query_suffixed = 0;
+        }
+        #endif
     } else if(strstr(buffer, "GET /?action=stream") != NULL) {
         req.type = A_STREAM;
         query_suffixed = 255;
@@ -1090,7 +1110,7 @@ void *client_thread(void *arg)
             query_suffixed = 0;
         }
         #endif
-	#ifdef WXP_COMPAT
+    #ifdef WXP_COMPAT
     } else if((strstr(buffer, "GET /cam") != NULL) && (strstr(buffer, ".mjpg") != NULL)) {
         req.type = A_STREAM_WXP;
         query_suffixed = 255;
@@ -1102,7 +1122,7 @@ void *client_thread(void *arg)
             query_suffixed = 0;
         }
         #endif
-	#endif
+    #endif
     } else if(strstr(buffer, "GET /?action=take") != NULL) {
         int len;
         req.type = A_TAKE;
@@ -1210,6 +1230,7 @@ void *client_thread(void *arg)
                 req.query_string = malloc(len + 1);
                 if (req.query_string == NULL)
                     exit(EXIT_FAILURE);
+                memset(req.query_string, 0, len + 1);
                 strncpy(req.query_string, pb, len);
             } else {
                 req.query_string = malloc(2);
@@ -1256,9 +1277,9 @@ void *client_thread(void *arg)
             return NULL;
         }
 
-        if(strstr(buffer, "User-Agent: ") != NULL) {
+        if(strcasestr(buffer, "User-Agent: ") != NULL) {
             req.client = strdup(buffer + strlen("User-Agent: "));
-        } else if(strstr(buffer, "Authorization: Basic ") != NULL) {
+        } else if(strcasestr(buffer, "Authorization: Basic ") != NULL) {
             req.credentials = strdup(buffer + strlen("Authorization: Basic "));
             decodeBase64(req.credentials);
             DBG("username:password: %s\n", req.credentials);
@@ -1380,7 +1401,7 @@ void *client_thread(void *arg)
         }
 
         if (found == 0) {
-            DBG("FILE output plugin not loaded\n");
+            LOG("FILE CHANGE TEST output plugin not loaded\n");
             send_error(lcfd.fd, 404, "FILE output plugin not loaded, taking snapshot not possible");
         } else {
             if (ret == 0) {
@@ -1406,7 +1427,7 @@ void *client_thread(void *arg)
 }
 
 /******************************************************************************
-Description.: This function cleans up ressources allocated by the server_thread
+Description.: This function cleans up resources allocated by the server_thread
 Input Value.: arg is not used
 Return Value: -
 ******************************************************************************/
@@ -1415,7 +1436,7 @@ void server_cleanup(void *arg)
     context *pcontext = arg;
     int i;
 
-    OPRINT("cleaning up ressources allocated by server thread #%02d\n", pcontext->id);
+    OPRINT("cleaning up resources allocated by server thread #%02d\n", pcontext->id);
 
     for(i = 0; i < MAX_SD_LEN; i++)
         close(pcontext->sd[i]);
@@ -1444,7 +1465,7 @@ void *server_thread(void *arg)
     context *pcontext = arg;
     pglobal = pcontext->pglobal;
 
-    /* set cleanup handler to cleanup ressources */
+    /* set cleanup handler to cleanup resources */
     pthread_cleanup_push(server_cleanup, pcontext);
 
     bzero(&hints, sizeof(hints));
@@ -1453,7 +1474,7 @@ void *server_thread(void *arg)
     hints.ai_socktype = SOCK_STREAM;
 
     snprintf(name, sizeof(name), "%d", ntohs(pcontext->conf.port));
-    if((err = getaddrinfo(NULL, name, &hints, &aip)) != 0) {
+    if((err = getaddrinfo(pcontext->conf.hostname, name, &hints, &aip)) != 0) {
         perror(gai_strerror(err));
         exit(EXIT_FAILURE);
     }
@@ -1562,7 +1583,6 @@ void *server_thread(void *arg)
                 DBG("create thread to handle client that just established a connection\n");
 
                 if(getnameinfo((struct sockaddr *)&client_addr, addr_len, name, sizeof(name), NULL, 0, NI_NUMERICHOST) == 0) {
-                    syslog(LOG_INFO, "serving client: %s\n", name);
                     DBG("serving client: %s\n", name);
                 }
 
